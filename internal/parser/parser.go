@@ -8,97 +8,112 @@ import (
 	"strconv"
 )
 
-const StringType = 1
-const ErrorType = 2
-const IntegerType = 3
-const BulkStringType = 4
-const ArrayType = 5
-const UnknownType = 6
+type DataType int
+
+const (
+	StringType DataType = iota
+	ErrorType
+	IntegerType
+	BulkStringType
+	ArrayType
+	UnknownType
+)
 
 type RawResponse = string
-type ResultType = int
 type BoxedValue struct {
-	resultType ResultType
-	value	   interface{}
+	resultType DataType
+	value      interface{}
 }
 
 var emptyArrayResult = []BoxedValue{}
 
-func NewBoxedValue(resultType ResultType, value interface{}) BoxedValue {
+type Parser struct{}
+
+func NewBoxedValue(resultType DataType, value interface{}) BoxedValue {
 	return BoxedValue{
 		resultType: resultType,
-		value: value,
+		value:      value,
 	}
 }
 
-func GetType(rawType uint8) ResultType {
+func (parser *Parser) GetType(rawType uint8) DataType {
 	switch rawType {
-	case '+': return StringType
-	case '-': return ErrorType
-	case ':': return IntegerType
-	case '$': return BulkStringType
-	case '*': return ArrayType
+	case '+':
+		return StringType
+	case '-':
+		return ErrorType
+	case ':':
+		return IntegerType
+	case '$':
+		return BulkStringType
+	case '*':
+		return ArrayType
 	default:
 		return UnknownType
 	}
 }
 
-func typeToString(resultType ResultType) string {
+func typeToString(resultType DataType) string {
 	switch resultType {
-	case IntegerType: return "IntegerType"
-	case ErrorType: return "ErrorType"
-	case StringType: return "StringType"
-	case BulkStringType: return "BulkStringType"
-	case ArrayType: return "ArrayType"
+	case IntegerType:
+		return "IntegerType"
+	case ErrorType:
+		return "ErrorType"
+	case StringType:
+		return "StringType"
+	case BulkStringType:
+		return "BulkStringType"
+	case ArrayType:
+		return "ArrayType"
 	default:
 		return "UnknownType"
 	}
 }
 
-func consumeContent(buffer *bytes.Buffer) (string, error) {
+func (parser *Parser) consumeContent(buffer *bytes.Buffer) (string, error) {
 	content, err := buffer.ReadString('\r')
 	if err != nil {
 		return "", err
 	}
-	return content[0: len(content) -1], err
+	return content[0 : len(content)-1], err
 }
 
-func consumeInt(buffer *bytes.Buffer) (int, error) {
-	content, err := consumeContent(buffer)
+func (parser *Parser) consumeInt(buffer *bytes.Buffer) (int, error) {
+	content, err := parser.consumeContent(buffer)
 	if err != nil {
 		return -1, err
 	}
 	intValue, err := strconv.Atoi(content)
 	if err != nil {
-		return -1, errors.New(fmt.Sprintf("Content of the response is not an integer got %s", content))
+		return -1, fmt.Errorf("content of the response is not an integer got %s", content)
 	}
 	return intValue, nil
 }
 
-func consumeString(buffer *bytes.Buffer) (string, error) {
-	content, err := consumeContent(buffer)
+func (parser *Parser) consumeString(buffer *bytes.Buffer) (string, error) {
+	content, err := parser.consumeContent(buffer)
 	if err != nil {
 		return "", err
 	}
 	return content, err
 }
 
-func consumeType(buffer *bytes.Buffer) (ResultType, error) {
+func (parser *Parser) consumeType(buffer *bytes.Buffer) (DataType, error) {
 	rawResultType, err := buffer.ReadByte()
 	if err != nil {
 		return UnknownType, err
 	}
-	resultType := GetType(rawResultType)
+	resultType := parser.GetType(rawResultType)
 	if resultType == UnknownType {
-		return UnknownType, errors.New(fmt.Sprintf("Unknown type detected got %c", rawResultType))
+		return UnknownType, fmt.Errorf("unknown type detected got %c", rawResultType)
 	}
 	return resultType, nil
 }
 
-func consumeBulkString(buffer *bytes.Buffer) (*string, error) {
-	size, err := consumeInt(buffer)
+func (parser *Parser) consumeBulkString(buffer *bytes.Buffer) (*string, error) {
+	size, err := parser.consumeInt(buffer)
 	if err != nil {
-		return nil, errors.New("Cannot read size of the bulk element ")
+		return nil, errors.New("cannot read size of the bulk element ")
 	}
 	if size == -1 {
 		return nil, nil
@@ -108,88 +123,89 @@ func consumeBulkString(buffer *bytes.Buffer) (*string, error) {
 	return &content, nil
 }
 
-func readError(buffer *bytes.Buffer) error {
-	errMsg, err := consumeContent(buffer)
+func (parser *Parser) readError(buffer *bytes.Buffer) error {
+	errMsg, err := parser.consumeContent(buffer)
 	if err != nil {
-		return errors.New("Cannot read error message from the response ")
+		return errors.New("cannot read error message from the response ")
 	}
 	return errors.New(errMsg)
 }
 
-func handleError(buffer *bytes.Buffer, expected ResultType, got ResultType) error {
+func (parser *Parser) handleError(buffer *bytes.Buffer, expected DataType, got DataType) error {
 	if got == ErrorType {
-		return readError(buffer)
+		return parser.readError(buffer)
 	}
-	return errors.New(fmt.Sprintf("Expected %s type got type %s", typeToString(expected), typeToString(got)))
+	return fmt.Errorf("expected %s type got type %s", typeToString(expected), typeToString(got))
 }
 
-func ReadInt(response RawResponse) (int, error) {
+func (parser *Parser) ReadInt(response RawResponse) (int, error) {
 	buf := bytes.NewBufferString(response)
-	resultType, err := consumeType(buf)
+	resultType, err := parser.consumeType(buf)
 	if err != nil {
 		return -1, err
 	}
 	if resultType != IntegerType {
-		return -1, handleError(buf, IntegerType, resultType)
+		return -1, parser.handleError(buf, IntegerType, resultType)
 	}
-	intValue, err := consumeInt(buf)
+	intValue, err := parser.consumeInt(buf)
 	if err != nil {
 		return -1, err
 	}
 	return intValue, err
 }
 
-func ReadString(response RawResponse) (string, error) {
+func (parser *Parser) ReadString(response RawResponse) (string, error) {
 	buf := bytes.NewBufferString(response)
-	resultType, err := consumeType(buf)
+	resultType, err := parser.consumeType(buf)
 	if err != nil {
 		return "", err
 	}
 	if resultType != StringType {
-		return "", handleError(buf, StringType, resultType)
+		return "", parser.handleError(buf, StringType, resultType)
 	}
-	str, err := consumeString(buf)
+	str, err := parser.consumeString(buf)
 	if err != nil {
 		return "", err
 	}
 	return str, nil
 }
 
-func ReadBulkString(response RawResponse) (*string, error) {
+func (parser *Parser) ReadBulkString(response RawResponse) (*string, error) {
 	buf := bytes.NewBufferString(response)
-	resultType, err := consumeType(buf)
+	resultType, err := parser.consumeType(buf)
 	if err != nil {
 		return nil, err
 	}
 	if resultType != BulkStringType {
-		return nil, handleError(buf, BulkStringType, resultType)
+		return nil, parser.handleError(buf, BulkStringType, resultType)
 	}
-	bulkStr, err := consumeBulkString(buf)
+	bulkStr, err := parser.consumeBulkString(buf)
 	if err != nil {
 		return nil, err
 	}
 	return bulkStr, nil
 }
 
-func ReadArray(response RawResponse) (*[]BoxedValue, error) {
+func (parser *Parser) ReadArray(response RawResponse) (*[]BoxedValue, error) {
 	buf := bytes.NewBufferString(response)
-	resultType, err := consumeType(buf)
+	var err error
+	resultType, err := parser.consumeType(buf)
 	if err != nil {
 		return &emptyArrayResult, err
 	}
 	if resultType != ArrayType {
-		return &emptyArrayResult, handleError(buf, ArrayType, resultType)
+		return &emptyArrayResult, parser.handleError(buf, ArrayType, resultType)
 	}
-	size, err := consumeInt(buf)
+	size, err := parser.consumeInt(buf)
 	if err != nil {
 		return &emptyArrayResult, err
 	}
 	buf.Next(1)
-	array := make([]BoxedValue, size, size)
+	array := make([]BoxedValue, size)
 	idx := 0
 	eof := false
 	for !eof {
-		resultType, err := consumeType(buf)
+		resultType, err := parser.consumeType(buf)
 		if errors.Is(err, io.EOF) {
 			eof = true
 			break
@@ -197,18 +213,24 @@ func ReadArray(response RawResponse) (*[]BoxedValue, error) {
 		var value interface{}
 		switch resultType {
 		case IntegerType:
-			value, err = consumeInt(buf)
+			value, err = parser.consumeInt(buf)
 		case StringType:
-			value, err = consumeString(buf)
+			value, err = parser.consumeString(buf)
 		case BulkStringType:
-			value, err = consumeBulkString(buf)
+			value, err = parser.consumeBulkString(buf)
 		default:
-			return &emptyArrayResult, errors.New("Only integer, string and bulk string are expected ")
+			return &emptyArrayResult, errors.New("only integer, string and bulk string are expected ")
 		}
-
+		if err != nil {
+			return &emptyArrayResult, err
+		}
 		array[idx] = NewBoxedValue(resultType, value)
 		idx++
 		buf.Next(1)
 	}
 	return &array, nil
+}
+
+func NewParser() *Parser {
+	return &Parser{}
 }
